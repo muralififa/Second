@@ -1,12 +1,4 @@
-Hi Vadim,
-
-Thank you for the clarification.
-
-At this time, I would like to withdraw my request for administrative access to the ServiceNow development environment. I initially submitted the request to understand how REST APIs are built within the platform, as it may help support my current process. However, I now understand the governance requirements around development activities and integration work.
-
-If any access is required in the future, I will ensure to follow the appropriate process by creating a ticket and aligning with the Demand management guidelines.
-
-Thank you again for your guidance.
-
-Best regards,
-Murali Tharan
+Hi Team,
+I noticed a discrepancy regarding the password details for the account srcihub on devad.wellpoint.com.
+In the attached screenshot from Password Manager, the “Last modified” date for this account is showing as 2/20/2025, 4:39:38 AM. However, in the summary table from the recent email notification about service ID password expiration, the “Last Set On” date for the same account appears as 1/22/2025.
+Can you please help clarify why there is a difference between the two dates? Which one should be considered as the correct reference for the “Last Modified” or “Last Set” date for the password?
