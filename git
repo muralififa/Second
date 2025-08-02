@@ -1,20 +1,28 @@
-let 
-safe= Text.Upper([DBMS_TYPE]),
-name= Text.Upper([name]),
-cluster= Text.Upper([u_cluster_name]),
+= Table.AddColumn(#"Previous Step", "InstanceName", each 
+let
+    // Uppercase all fields to avoid case issues
+    safe = Text.Upper([DBMS_TYPE]),
+    name = Text.Upper([name]),
+    cluster = Text.Upper([u_cluster_name]),
 
-delimiter =
-if Text.StartsWith(safe, "MYSQL") or 
-Text.StartsWith(safe, "SYBASE") then "@"
+    // Determine delimiter
+    delimiter =
+        if Text.StartsWith(safe, "MYSQL") or Text.StartsWith(safe, "SYBASE") then "@"
+        else null,
 
-else null,
+    // Parse after delimiter
+    parsed =
+        if delimiter <> null and Text.Contains(name, delimiter) then
+            Text.AfterDelimiter(name, delimiter)
+        else null,
 
-parsed = if delimiter <> null and 
-Text.Contains(name,delimiter) then 
-Text.AfterDelimiter(name,delimiter) else null,
+    // Determine final instance name
+    finalInstance =
+        if Text.StartsWith(safe, "SYBASE") and cluster <> null and Text.Length(Text.Trim(cluster)) > 0 then
+            cluster
+        else
+            parsed
 
-changed = if parsed <> null and 
-Text.Contains(parsed,clusted)
-
-in 
-parsed
+in
+    finalInstance
+)
