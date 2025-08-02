@@ -3,7 +3,7 @@ let
     safe = [CAFSafeName], 
     file = [CAFFileName],
 
-    // Choose delimiter based on safe name
+    // Choose delimiter based on DB type
     delimiter = 
         if Text.StartsWith(safe, "SVC-IH_MYSQL_") or 
            Text.StartsWith(safe, "SVC-IH_SYBASE_") or 
@@ -11,21 +11,19 @@ let
         else if Text.StartsWith(safe, "SVC-IH_ORA_") then "-"
         else null,
 
-    // Clean Sybase file ending with 'v' or 'V'
-    cleanedFile = 
-        if Text.StartsWith(safe, "SVC-IH_SYBASE_") and Text.EndsWith(file, "v") then
-            Text.Start(file, Text.Length(file) - 1)
-        else if Text.StartsWith(safe, "SVC-IH_SYBASE_") and Text.EndsWith(file, "V") then
-            Text.Start(file, Text.Length(file) - 1)
-        else 
-            file,
+    // Step 1: Extract raw instance name before delimiter
+    rawInstance = 
+        if delimiter <> null and Text.Contains(file, delimiter) then 
+            Text.BeforeDelimiter(file, delimiter) 
+        else null,
 
-    // Extract instance name
-    InstanceName = 
-        if delimiter <> null and Text.Contains(cleanedFile, delimiter) then 
-            Text.BeforeDelimiter(cleanedFile, delimiter) 
-        else null
+    // Step 2: If it's SYBASE and ends with 'v', remove the 'v'
+    finalInstance = 
+        if Text.StartsWith(safe, "SVC-IH_SYBASE_") and Text.EndsWith(rawInstance, "v") then 
+            Text.Start(rawInstance, Text.Length(rawInstance) - 1) 
+        else 
+            rawInstance
 
 in 
-    InstanceName
+    finalInstance
 )
