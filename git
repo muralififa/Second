@@ -1,4 +1,33 @@
-Hi Team,
-I noticed a discrepancy regarding the password details for the account srcihub on devad.wellpoint.com.
-In the attached screenshot from Password Manager, the “Last modified” date for this account is showing as 2/20/2025, 4:39:38 AM. However, in the summary table from the recent email notification about service ID password expiration, the “Last Set On” date for the same account appears as 1/22/2025.
-Can you please help clarify why there is a difference between the two dates? Which one should be considered as the correct reference for the “Last Modified” or “Last Set” date for the password?
+import pyodbc
+import pandas as pd
+
+# 🔐 Define connection string
+conn_str = (
+    "DRIVER={ODBC Driver 17 for SQL Server};"
+    "SERVER=sql-snow-prod.us.ad.wellpoint.com,10001;"
+    "DATABASE=YourDatabaseName;"
+    "Trusted_Connection=yes;"  # or use UID=youruser;PWD=yourpassword;
+    "TrustServerCertificate=yes;"
+)
+
+# 🟡 Define your SQL query
+query = """
+SELECT dbtype, instancename, port, prod_ind, created_date
+FROM SNOW_Table;
+
+SELECT dbtype, instancename, port, safe, vaulted_date
+FROM CyberArk_Table;
+"""
+
+# 🔗 Connect and execute
+with pyodbc.connect(conn_str) as conn:
+    df_snow = pd.read_sql("SELECT * FROM SNOW_Table", conn)
+    df_cyberark = pd.read_sql("SELECT * FROM CyberArk_Table", conn)
+
+# 📤 Export to Excel
+output_file = "CyberArk_Vaulting_Report.xlsx"
+with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+    df_snow.to_excel(writer, sheet_name="SNOW", index=False)
+    df_cyberark.to_excel(writer, sheet_name="CyberArk", index=False)
+
+print(f"✅ Excel exported successfully: {output_file}")
