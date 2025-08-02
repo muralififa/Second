@@ -1,9 +1,22 @@
+SELECT *
 FROM ServiceNow.dbo.cmdb_ci_db_instance inst
 INNER JOIN ServiceNow.dbo.cmdb_ci_environment e ON inst.u_environment = e.sys_id
-WHERE  (inst.sys_class_name in ('cmdb_ci_db_mysql_instance') and inst.dv_operational_status ='ACTIVE'
- and inst.dv_support_group = 'WDBS SYBASE ON DUTY SUPPORT')  and
-(inst.sys_class_name in ('cmdb_ci_db_mysql_instance') and inst.dv_operational_status ='ACTIVE'
- and inst.dv_support_group !='CBH Oracle Database') and  inst.sys_created_by not in ('srcMIDDiscovery', 'TADDM User')
-  and inst.u_instance_type in ('CONTAINER - ORACLE', 'DBMS INSTANCE','READ ONLY REPLICA')
-  and inst.dv_u_environment != 'Sandbox'
-  and not ((inst.sys_updated_on < (getdate() -180)) and inst.dv_operational_status = 'Retired')
+WHERE 
+  (
+    (inst.sys_class_name = 'cmdb_ci_db_sybase_instance' AND 
+     inst.dv_operational_status = 'ACTIVE' AND 
+     inst.dv_support_group = 'WDBS SYBASE ON DUTY SUPPORT')
+
+    OR
+
+    (inst.sys_class_name = 'cmdb_ci_db_mysql_instance' AND 
+     inst.dv_operational_status = 'ACTIVE' AND 
+     inst.dv_support_group != 'CBH Oracle Database')
+  )
+  AND inst.sys_created_by NOT IN ('srcMIDDiscovery', 'TADDM User')
+  AND inst.u_instance_type IN ('CONTAINER - ORACLE', 'DBMS INSTANCE', 'READ ONLY REPLICA')
+  AND inst.dv_u_environment != 'Sandbox'
+  AND NOT (
+    inst.sys_updated_on < DATEADD(DAY, -180, GETDATE()) AND 
+    inst.dv_operational_status = 'Retired'
+  );
