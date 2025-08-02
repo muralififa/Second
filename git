@@ -1,22 +1,20 @@
-SELECT *
-FROM ServiceNow.dbo.cmdb_ci_db_instance inst
-INNER JOIN ServiceNow.dbo.cmdb_ci_environment e ON inst.u_environment = e.sys_id
-WHERE 
-  (
-    (inst.sys_class_name = 'cmdb_ci_db_sybase_instance' AND 
-     inst.dv_operational_status = 'ACTIVE' AND 
-     inst.dv_support_group = 'WDBS SYBASE ON DUTY SUPPORT')
+let 
+safe= Text.Upper([DBMS_TYPE]),
+name= Text.Upper([name]),
+cluster= Text.Upper([u_cluster_name]),
 
-    OR
+delimiter =
+if Text.StartsWith(safe, "MYSQL") or 
+Text.StartsWith(safe, "SYBASE") then "@"
 
-    (inst.sys_class_name = 'cmdb_ci_db_mysql_instance' AND 
-     inst.dv_operational_status = 'ACTIVE' AND 
-     inst.dv_support_group != 'CBH Oracle Database')
-  )
-  AND inst.sys_created_by NOT IN ('srcMIDDiscovery', 'TADDM User')
-  AND inst.u_instance_type IN ('CONTAINER - ORACLE', 'DBMS INSTANCE', 'READ ONLY REPLICA')
-  AND inst.dv_u_environment != 'Sandbox'
-  AND NOT (
-    inst.sys_updated_on < DATEADD(DAY, -180, GETDATE()) AND 
-    inst.dv_operational_status = 'Retired'
-  );
+else null,
+
+parsed = if delimiter <> null and 
+Text.Contains(name,delimiter) then 
+Text.AfterDelimiter(name,delimiter) else null,
+
+changed = if parsed <> null and 
+Text.Contains(parsed,clusted)
+
+in 
+parsed
