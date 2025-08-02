@@ -1,13 +1,29 @@
-= Table.AddColumn(#"Filtered Rows", "InstanceName", each let 
-safe = [CAFSafeName] , 
-file =[CAFFileName],
-delimiter = 
-  if Text.StartsWith(safe,"SVC-IH_MYSQL_") or 
-Text.StartsWith(safe,"SVC-IH_SYBASE_") or Text.StartsWith(safe,"SVC-IH_POST") then "."
-  else if Text.StartsWith(safe,"SVC-IH_ORA_") then "-"
-  else null,
-InstanceName= if delimiter <> null and 
-Text.Contains(file,delimiter) then 
-Text.BeforeDelimiter(file, delimiter) else null
+= Table.AddColumn(#"Filtered Rows", "InstanceName", each 
+let 
+    safe = [CAFSafeName], 
+    file = [CAFFileName],
+    
+    // Detect delimiter based on db type
+    delimiter = 
+        if Text.StartsWith(safe, "SVC-IH_MYSQL_") or 
+           Text.StartsWith(safe, "SVC-IH_SYBASE_") or 
+           Text.StartsWith(safe, "SVC-IH_POST") then "."
+        else if Text.StartsWith(safe, "SVC-IH_ORA_") then "-"
+        else null,
+
+    // Remove trailing 'V' for Sybase safes
+    cleanedFile = 
+        if Text.StartsWith(safe, "SVC-IH_SYBASE_") and Text.EndsWith(Text.Lower(file), "v") then
+            Text.Start(file, Text.Length(file) - 1)
+        else 
+            file,
+
+    // Extract Instance Name
+    InstanceName = 
+        if delimiter <> null and Text.Contains(cleanedFile, delimiter) then 
+            Text.BeforeDelimiter(cleanedFile, delimiter) 
+        else null
+
 in 
-  InstanceName)
+    InstanceName
+)
