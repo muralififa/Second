@@ -1,29 +1,9 @@
-= Table.AddColumn(#"Filtered Rows", "InstanceName", each 
-let 
-    safe = [CAFSafeName], 
-    file = [CAFFileName],
-
-    // Choose delimiter based on DB type
-    delimiter = 
-        if Text.StartsWith(safe, "SVC-IH_MYSQL_") or 
-           Text.StartsWith(safe, "SVC-IH_SYBASE_") or 
-           Text.StartsWith(safe, "SVC-IH_POST") then "."
-        else if Text.StartsWith(safe, "SVC-IH_ORA_") then "-"
-        else null,
-
-    // Step 1: Extract raw instance name before delimiter
-    rawInstance = 
-        if delimiter <> null and Text.Contains(file, delimiter) then 
-            Text.BeforeDelimiter(file, delimiter) 
-        else null,
-
-    // Step 2: If it's SYBASE and ends with 'v', remove the 'v'
-    finalInstance = 
-        if Text.StartsWith(safe, "SVC-IH_SYBASE_") and Text.EndsWith(rawInstance, "v") then 
-            Text.Start(rawInstance, Text.Length(rawInstance) - 1) 
-        else 
-            rawInstance
-
-in 
-    finalInstance
-)
+FROM ServiceNow.dbo.cmdb_ci_db_instance inst
+INNER JOIN ServiceNow.dbo.cmdb_ci_environment e ON inst.u_environment = e.sys_id
+WHERE  (inst.sys_class_name in ('cmdb_ci_db_mysql_instance') and inst.dv_operational_status ='ACTIVE'
+ and inst.dv_support_group = 'WDBS SYBASE ON DUTY SUPPORT')  and
+(inst.sys_class_name in ('cmdb_ci_db_mysql_instance') and inst.dv_operational_status ='ACTIVE'
+ and inst.dv_support_group !='CBH Oracle Database') and  inst.sys_created_by not in ('srcMIDDiscovery', 'TADDM User')
+  and inst.u_instance_type in ('CONTAINER - ORACLE', 'DBMS INSTANCE','READ ONLY REPLICA')
+  and inst.dv_u_environment != 'Sandbox'
+  and not ((inst.sys_updated_on < (getdate() -180)) and inst.dv_operational_status = 'Retired')
