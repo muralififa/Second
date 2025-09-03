@@ -1,335 +1,407 @@
-import os
-import pandas as pd
-import pyodbc
 import cx_Oracle
-from pymongo import MongoClient
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-from threading import Lock
-import warnings
-import requests
-import time
-import logging
-from dotenv import load_dotenv
-import json
+import openpyxl
+import os
+import shutil
+import datetime
+import win32com.client as win32
+import pyodbc
+from openpyxl.worksheet.table import TableStyleInfo
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-certificates = current_dir + '\\certificates'
-log_dir = current_dir + '\\logs'
-ssl_cert = certificates + '\\global-bundle 1.pem'
-config_file = current_dir + '\\conf'
-env_path = config_file + '\\cred.env'
-query_location=current_dir+'\\query'
-query_loc=query_location+'\\Queries.txt'
+# --- Helper to get current time string ---
+def get_get_current_time():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-#-----------------------Set up log directory-----------------------
-os.makedirs(log_dir, exist_ok=True)
+# --- Get Documents folder cross-platform ---
+def get_documents_folder():
+    if os.name == 'nt':  # Windows
+        return os.path.join(os.environ['USERPROFILE'], 'Documents')
+    elif os.name == 'posix':  # macOS/Linux
+        return os.path.join(os.path.expanduser("~"), "Documents")
+    else:
+        raise OSError("Unsupported operating system")
 
-# Generate timestamp-based log filename
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-log_filename = f"documentdb_log_{timestamp}.log"
-log_file = os.path.join(log_dir, log_filename)
+# --- Safe Excel writing to avoid Unicode errors ---
+def safe_excel_write(ws, row_idx, col_idx, value):
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8", errors="replace")
+        except:
+            value = str(value)
+    ws.cell(row=row_idx, column=col_idx, value=value)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler(log_file),
-        logging.StreamHandler()
-    ]
+# --- Setup paths ---
+location = get_documents_folder()
+DBID_Automation = os.path.join(location, 'DBID_Automation')
+dir_path = os.path.join(DBID_Automation, 'Report')
+print(dir_path)
+
+# --- Get newest file in dir ---
+def newest_file_in_dir(dir_path):
+    files = [f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))]
+    files.sort(key=lambda x: os.path.getmtime(os.path.join(dir_path, x)), reverse=True)
+    return files[0]
+
+new = newest_file_in_dir(dir_path)
+today = datetime.datetime.now().strftime("%m_%d_%y")
+template_file = os.path.join(dir_path, new)
+new_file = f"{template_file[:-13]}{today}.xlsx"
+
+# Copy or replace file
+if new_file == template_file:
+    os.remove(template_file)
+    new = newest_file_in_dir(dir_path)
+    template_file = os.path.join(dir_path, new)
+    shutil.copy2(template_file, new_file)
+else:
+    shutil.copy2(template_file, new_file)
+
+print("bef")
+
+# --- Oracle Connection ---
+dsn = cx_Oracle.makedsn(host="ihubtopo-p-01.internal.das", port=1525, service_name="topoprd")
+username = "wdbs"
+password = "YBkHzLmvsQG-n3rTUOpCdAfW$"
+
+server = 'sql-snow-prod.us.ad.wellpoint.com\SQL01,10001'  # Use hostname or IP address
+database = 'ServiceNow'
+connection_string = f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={database};Trusted_Connection=yes;"
+conn = pyodbc.connect(connection_string)
+print(" SQLSERVER Connection successful!")
+
+connection = cx_Oracle.connect(
+    user=username,
+    password=password,
+    dsn=dsn,
+    encoding="UTF-8",
+    nencoding="UTF-8"
 )
 
-# Get logger
-logger = logging.getLogger(__name__)
-#-------------------------------------------------------------------
+# --- Read queries from file ---
+Query_Location = os.path.join(DBID_Automation, 'queries.txt')
+with open(Query_Location, 'r', encoding='utf-8') as f:
+    queries = f.read()
+a = queries.split(";")
 
-#-----------------------#Reading Creds-------------------------------
-
-load_dotenv(dotenv_path=env_path)
-
-# Check if path was loaded
-if not os.path.exists(env_path):
-    logging.info(f"[ERROR] .env file not found at: {env_path}")
-else:
-    logging.info(f"[INFO] Loaded All credentials from .env file: {env_path}")
-
-# Read credentials
-mongo_user = os.getenv("MONGO_USER")
-mongo_pass = os.getenv("MONGO_PASS")
-sn_dod_user = os.getenv("SN_DOD_USER")
-sn_dod_pass = os.getenv("SN_DOD_PASS")
-sn_dod_pass_dev = os.getenv("SN_DOD_PASS_DEV")
-sn_dbinfo_user = os.getenv("SN_DBINFO_USER")
-sn_dbinfo_pass = os.getenv("SN_DBINFO_PASS")
-sn_dbinfo_user_dev=os.getenv("SN_DBINFO_PASS_DEV")
-oracle_user = os.getenv("ORACLE_USER")
-oracle_pass = os.getenv("ORACLE_PASS")
-print(oracle_user)
-#---------------------------------------------------------------------
-
-#-------------- ServiceNow POST Request Creds Intailaizing (Prod Data)------------
-sn_auth_dod = (sn_dod_user, sn_dod_pass)
-sn_auth_dbinfo = (sn_dbinfo_user, sn_dbinfo_pass)
-#---------------------------------------------------------------------
-
-warnings.filterwarnings('ignore')
-print('Starting...', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-
-#log starts
-
-logging.info("=== Starting DocumentDB Oracle Job (Prod) ===")
-
-
-#----------------Supporting Lists for Itterations -----------------------
-report_data = []
-dbids_data = []
-avatar_data = []
-servicenow_db_payload = []
-servicenow_info_payload = []
-lock = Lock()
-
-
-# ---------- Oracle Cursor Part ------------------------
-#oracle_dsn = cx_Oracle.makedsn("va33dx14-scan1.wellpoint.com", 1525, service_name="topod")   #Dev
-oracle_dsn = cx_Oracle.makedsn("dc04px21-scan1.internal.das", 1525, service_name="topoprd")   #Prod
-#oracle_dsn = cx_Oracle.makedsn("ihubtopo-d-01.internal.das", 1525, service_name="topod")    #OCI
-conn_oracle = cx_Oracle.connect(user=oracle_user, password=oracle_pass, dsn=oracle_dsn)
-cursor = conn_oracle.cursor()
-
-packages = ['COLLECT_DOCDB_ALL_DATA_P', 'COLLECT_DOCDB_DATABASES_P', 'COLLECT_DOCDB_DBINFO_P']
-for pkg in packages:
-    try:
-        cursor.callproc("wdbs.job_pck.start_execution", [pkg])
-        logging.info(f"Started job package: {pkg}")
-        time.sleep(1)
-    except Exception as e:
-        logging.error(f"Failed to start package {pkg}: {e}")
-
-conn_oracle.commit()
-
-
-# ------- Inventory which we need to try connection Everyday ---------
-with open(query_loc, 'r') as f:
-    oracle_query = f.read()
-df_oracle = pd.read_sql(oracle_query, con=conn_oracle)
-df_oracle.columns = df_oracle.columns.str.strip().str.lower()
-df_oracle[['con_str', 'port']] = df_oracle['connection_string'].str.split(':', expand=True)
-df = df_oracle
-
-logging.info(f"Total MongoDB instances to connect: {len(df)}")
+loop = []
 
 
 
-# --- MongoDB Processing Function ---
-def check_mongo_connection(index, row):
-    uri = (
-        f"mongodb://{mongo_user}:{mongo_pass}@{row['con_str']}:{row['port']}/"
-        f"?tls=true&tlsCAFile={ssl_cert}&retryWrites=false"
-    )
-    try:
-        client = MongoClient(uri, serverSelectionTimeoutMS=30000,
-                             connectTimeoutMS=30000, socketTimeoutMS=30000)
-        build_info = client.admin.command("buildinfo")
-        users_info = client.admin.command("usersInfo")
-        databases = client.list_database_names()
-        capture_dttm = datetime.now().strftime('%d-%b-%y').upper()
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        logging.info(f"[{index}] Connected to {row['server_nm']} - Version: {build_info.get('version', '')}, Databases: {len(databases)}, Users: {len(users_info.get('users', []))}")
-        with lock:
-            dbids_data.extend([
-                (
-                    capture_dttm, row['dbms_type'], row['server_nm'], row['instance_nm'],
-                    user['user'], 'ACTIVE', 'SERVICE ID', row['sys_id'], int(row['instance_key'])
-                )
-                for user in users_info.get('users', [])
-            ])
-            avatar_data.extend([
-                (
-                    capture_dttm, role['db'], user['user'], row['sys_id'],
-                    role['role'], int(row['instance_key'])
-                )
-                for user in users_info.get('users', [])
-                for role in user.get('roles', [])
-            ])
-            servicenow_db_payload.extend([
-                {
-                    "u_capture_dttm": timestamp,
-                    "u_db_type": "DOCUMENTDB",
-                    "u_instance_sys_id": row['sys_id'],
-                    "u_database_name": db,
-                    "u_production_ind": row['prod_ind']
-                }
-                for db in databases
-            ])
-            servicenow_info_payload.append({
-                "u_instance_sys_id": row['sys_id'],
-                "u_db_type": "DOCUMENTDB",
-                "u_db_version": build_info.get('version', '')
-            })
-            #if you want failure report in any situation below use below one
-            report_data.append({
-                'sys_id': row['sys_id'],
-                'ConnectionString': row['con_str'],
-                'Connection status': 'Pass',
-                'Reason for failure': ''
-            })
-
-    except Exception as e:
-        logging.error(f"[{index}] ERROR connecting to {row['server_nm']} - {e}")
-        cursor.callproc("wdbs.connection_pck.add_error_message", [
-            int(row['instance_key']), row['instance_nm'], row['sys_id'],
-            'COLLECT_DOCDB_ALL_DATA_P', str(e), row['con_str'], mongo_user
-        ])
-        conn_oracle.commit()
-        with lock:
-            report_data.append({
-                'sys_id': row['sys_id'],
-                'ConnectionString': row['con_str'],
-                'Connection status': 'Fail',
-                'Reason for failure': str(e)
-            })
-        return (index, 'Failed', str(e))
-    finally:
-        if 'client' in locals():
-            client.close()
-
-# --- Threaded Mongo Connections ---
-with ThreadPoolExecutor(max_workers=4) as executor:
-    futures = [executor.submit(check_mongo_connection, i, df.loc[i]) for i in range(len(df))]
-    for future in as_completed(futures):
-        try:
-            future.result()
-        except Exception as e:
-            logging.error(f"Thread Exception Occured {e}")
-# ------------------------- Oracle Inserts -----------------------------------
-conn_oracle_1 = cx_Oracle.connect(user=oracle_user, password=oracle_pass, dsn=oracle_dsn)
-cursor_1 = conn_oracle_1.cursor()
-
-if dbids_data:
-    cursor.executemany("""
-        INSERT INTO WDBS.STAGE_DBIDS_DOCUMENTDB 
-        (CAPTURE_DTTM, DBMS_TYPE, HOST, INSTANCE_NM, LOGINID, IDSTATUS, DBID_TYPE_NM, INSTANCE_SYS_ID, INSTANCE_KEY)
-        VALUES (:1, :2, :3, :4, :5, :6, :7, :8, :9)
-    """, dbids_data)
-    logging.info(f"Inserted {len(dbids_data)} DBIDS records.")
-
-if avatar_data:
-    cursor.executemany("""
-        INSERT INTO WDBS.STAGE_AVATAR_DOCUMENTDB_ID_PRIVS 
-        (CAPTURE_DTTM, DATABASE_NM, LOGIN_ID, INSTANCE_SYS_ID, ROLE_NAME, INSTANCE_KEY)
-        VALUES (:1, :2, :3, :4, :5, :6)
-    """, avatar_data)
-    logging.info(f"Inserted {len(avatar_data)} Avatar records.")
 
 
-conn_oracle_1.commit()
-cursor_1.close()
-conn_oracle_1.close()
 
-logging.info(f"Data Insertions to Stage Tables were successfull and Cursor Closed")
 
-# --- ServiceNow Posting ---
-headers = {"Content-Type": "application/json"}
 
-def post_to_servicenow(url, data, name, auth,size,package):
-    if not data:
-        return 204
-    try:
-        response = requests.post(url, headers=headers, auth=auth, json={"records": data}, verify=False)
-        status = "Success" if response.status_code in [200, 201] else "Failed"
-        logging.info(f"Posted {name} - {status} ({response.status_code})")
-        return response.status_code
-    except Exception as e:
-        logging.error(f"Failed to post {name}: {e}")
+
+
+
+
+
+
+
+
+job, error, dbid, snow, tickets = a[0], a[1], a[2], a[3], a[4]
+loop.extend([job, error, dbid, snow, tickets])
+
+
+
+# --- Loop through all queries ---
+for i in loop:
+    if i==dbid:
+        print(get_get_current_time(),'--     DBID Collection Query Started')
+        #connection = cx_Oracle.connect("wdbs", "catbarf", "WDBS_PROD")
+        cursor = connection.cursor()
+        cursor.execute(dbid)
+        # Load the Excel workbook
+        workbook = openpyxl.load_workbook(new_file)
+        # Get the target sheet
+        sheet = workbook['DBID Collection']
+        #################
+        # Clear data in columns 9 to 28 (I to AB), starting from row 2
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=9, max_col=27):
+            for cell in row:
+                cell.value = None
+
+        # Paste the new data into columns 9 to 28 (I to AB), starting from row 2
+        for i, row in enumerate(cursor, start=2):
+            for j, value in enumerate(row, start=9):
+                sheet.cell(row=i, column=j, value=value)
+
+        # # Dynamically adjust the table range to include the entire sheet
+        # table = sheet.tables['DBIDS']  # Replace with the actual table name
+        # table_end_row = sheet.max_row  # Includes all rows with data
+        # table_end_col = sheet.max_column  # Includes all columns (A to AB)
+
+        # # Update the table range to include the entire sheet
+        # table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
+
+        # # Optionally apply a style to the table
+        # style = TableStyleInfo(
+        #     name="TableStyleLight2",  # You can choose any style you prefer
+        #     showFirstColumn=False,
+        #     showLastColumn=False,
+        #     showRowStripes=True,
+        #     showColumnStripes=False
+        # )
+        # table.tableStyleInfo = style
+
+        ###############
+
+
+        workbook.save(new_file)
+        cursor.close()
+        #connection.close()
+        print(get_get_current_time(),'--     DBID Sucessfull')
+    elif i==job:
+        print(get_get_current_time(),'--     Job Completion Query Started')
+        #connection = cx_Oracle.connect("wdbs", "catbarf", "WDBS_PROD")
+        cursor = connection.cursor()
+        cursor.execute(job)
+        # Load the Excel workbook
+        workbook = openpyxl.load_workbook(new_file)
+        # Get the target sheet
+        sheet = workbook['Job Completion']
         
+        # Clear the existing data in the sheet, starting from the second row
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+            for cell in row:
+                cell.value = None
 
-# --- Final Job Completion Tracking ---
-job_failures = []
-job_warnings = []
-time.sleep(2)
-try:
-    logging.info("ServiceNow DOD PUSH STARTED")
-    status_code = post_to_servicenow(
-        "https://elevancehealth.service-now.com/api/now/import/u_infohub_database_import/insertMultiple",
-        servicenow_db_payload, "ServiceNow DOD", sn_auth_dod,len(servicenow_db_payload),'COLLECT_DOCDB_DATABASES_P'
-    )
-    if status_code not in [200, 201]:
-        job_warnings.append(('COLLECT_DOCDB_DATABASES_P', len(servicenow_db_payload)))
-        cursor.callproc("wdbs.job_pck.END_JOB_COMPLETE_WITH_WARNING",['COLLECT_DOCDB_DATABASES_P', len(servicenow_db_payload)])
-        logging.info("COLLECT_DOCDB_DATABASES_P Job Completed with Warnings")
-    else:
-        cursor.callproc("wdbs.job_pck.end_job_success",['COLLECT_DOCDB_DATABASES_P', len(servicenow_db_payload)])
-        logging.info("COLLECT_DOCDB_DATABASES_P Job Completed Successfull")
-                    
-except Exception as e:
-    job_failures.append(('COLLECT_DOCDB_DATABASES_P', str(e)))
-    cursor.callproc("wdbs.job_pck.end_job_failure", ['COLLECT_DOCDB_DATABASES_P', str(e), 0])
-    logging.info(f"COLLECT_DOCDB_DATABASES_P Job Failed --> {e}")
+        # Paste the data from the database into the sheet, starting from the second row
+        for i, row in enumerate(cursor, start=2):
+            for j, cell in enumerate(row, start=1):
+                sheet.cell(row=i, column=j, value=cell)
+
+         # Dynamically adjust the table range
+        table = sheet.tables['JOB']  # Replace 'YourTableName' with the actual table name in Excel
+        table_end_row = sheet.max_row
+        table_end_col = sheet.max_column   
+
+        # Update the table range
+        table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
+
+        # Optionally, apply a style to the table
+        style = TableStyleInfo(
+            name="TableStyleLight2", 
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False
+        )
+        table.tableStyleInfo = style
+
     
-time.sleep(2)
-try:
-    logging.info("ServiceNow DbInfo PUSH STARTED")
-    status_code = post_to_servicenow(
-        "https://elevancehealth.service-now.com/api/now/import/u_infohub_dbinfo_import/insertMultiple",
-        servicenow_info_payload, "ServiceNow DbInfo", sn_auth_dbinfo,len(servicenow_info_payload),'COLLECT_DOCDB_DBINFO_P'
-    )
-    if status_code not in [200, 201]:
-        job_warnings.append(('COLLECT_DOCDB_DBINFO_P', len(servicenow_info_payload)))
-        cursor.callproc("wdbs.job_pck.END_JOB_COMPLETE_WITH_WARNING",['COLLECT_DOCDB_DBINFO_P', len(servicenow_info_payload)])
-        logging.info("COLLECT_DOCDB_DBINFO_P Job Completed with Warnings")
-    else:
-        cursor.callproc("wdbs.job_pck.end_job_success",['COLLECT_DOCDB_DBINFO_P', len(servicenow_info_payload)])
+
+        workbook.save(new_file)
+        cursor.close()
+        #connection.close()
+        print(get_get_current_time(),'--     Job Completion Sucessfull')
+    elif i==error:
+        print(get_get_current_time(),'--     Error Message Query Started')
+        #connection = cx_Oracle.connect("wdbs", "catbarf", "WDBS_PROD")
+        cursor = connection.cursor()
+        cursor.execute(error)
+        # Load the Excel workbook
+        workbook = openpyxl.load_workbook(new_file)
+        # Get the target sheet
+        sheet = workbook['Error Messages']
         
-except Exception as e:
-    job_failures.append(('COLLECT_DOCDB_DBINFO_P', str(e)))
-    cursor.callproc("wdbs.job_pck.end_job_failure", ['COLLECT_DOCDB_DBINFO_P', str(e), 0])
-    logging.info(f"COLLECT_DOCDB_DATABASES_P Job Failed --> {e}")
-    
-time.sleep(2)
-# --- Main Job Completion ---
-if job_failures:
-    for job, err in job_failures:
-        cursor.callproc("wdbs.job_pck.end_job_failure", ['COLLECT_DOCDB_ALL_DATA_P', err, 0])
-        logging.info("COLLECT_DOCDB_ALL_DATA_P Job Failed Because DOD or DBInfo Failed")
-else:
-    cursor.callproc("wdbs.job_pck.end_job_success", ['COLLECT_DOCDB_ALL_DATA_P', len(df)])
-    logging.info("All Job Ran Successfully")
-    
-time.sleep(2)
-conn_oracle.commit()
-cursor.close()
-conn_oracle.close()
-# --- Report ---                        if you want failure as report get from this.
-#report_df = pd.DataFrame(report_data)
-#output_file = r'C:\Users\AL20098\Documents\DocumentDb_Python_Job\SupportFiles\Mongo_Connection_Report.xlsx'
-#report_df.to_excel(output_file, index=False)
-#print(f"\nMongoDB connection report saved to: {output_file}")
+        # Clear the existing data in the sheet, starting from the second row
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+            for cell in row:
+                cell.value = None
+
+        # Paste the data from the database into the sheet, starting from the second row
+        for i, row in enumerate(cursor, start=2):
+            for j, cell in enumerate(row, start=1):
+                sheet.cell(row=i, column=j, value=cell)
+        '''
+        # Dynamically adjust the table range
+        table = sheet.tables['ERRORS']  # Replace 'YourTableName' with the actual table name in Excel
+        table_end_row = sheet.max_row
+        table_end_col = sheet.max_column   
+
+        # Update the table range
+        table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
+
+        # Optionally, apply a style to the table
+        style = TableStyleInfo(
+            name="TableStyleLight2", 
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False
+        )
+        table.tableStyleInfo = style
+        '''
+
+        workbook.save(new_file)
+        cursor.close()
+        #connection.close()
+        print(get_get_current_time(),'--     Error Message Sucessfull')
+
+    elif i==snow:
+        print(get_get_current_time(),'--     SNOW Query Started')
+        #connection = cx_Oracle.connect("wdbs", "catbarf", "WDBS_PROD")
+        cursor_sql = conn.cursor()
+        cursor_sql.execute(snow)
+        # Load the Excel workbook
+        workbook = openpyxl.load_workbook(new_file)
+        # Get the target sheet
+        sheet = workbook['SNOW Extract']
+        
+        # Clear the existing data in the sheet, starting from the second row and column 7 to the end
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+            for cell in row[2:]:
+                cell.value = None
+                
+        # Paste the data from the database into the sheet, starting from the second row and column 7
+        for i, row in enumerate(cursor_sql, start=2):
+            for j, cell in enumerate(row[0:], start=2):
+                sheet.cell(row=i, column=j, value=cell)
+
+        #  # Dynamically adjust the table range
+        # table = sheet.tables['SNOW']  # Replace 'YourTableName' with the actual table name in Excel
+        # table_end_row = sheet.max_row
+        # table_end_col = sheet.max_column   
+
+        # # Update the table range
+        # table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
+
+        # # Optionally, apply a style to the table
+        # style = TableStyleInfo(
+        #     name="TableStyleLight2", 
+        #     showFirstColumn=False,
+        #     showLastColumn=False,
+        #     showRowStripes=True,
+        #     showColumnStripes=False
+        # )
+        # table.tableStyleInfo = style
+        workbook.save(new_file)
+        cursor_sql.close()
+        #connection.close()
+        print(get_get_current_time(),'--     SNOW Query Sucessfull')  
+
+    elif i==tickets:
+        print(get_get_current_time(),'--     Incident Tickets Query Started')
+        #connection = cx_Oracle.connect("wdbs", "catbarf", "WDBS_PROD")
+        cursor_sql = conn.cursor()
+        cursor_sql.execute(tickets)
+        # Load the Excel workbook
+        workbook = openpyxl.load_workbook(new_file)
+        # Get the target sheet
+        sheet = workbook['Tickets']
+        
+        # Clear the existing data in the sheet, starting from the second row
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+            for cell in row:
+                cell.value = None
+
+        # Paste the data from the database into the sheet, starting from the second row
+        for i, row in enumerate(cursor_sql, start=2):
+            for j, cell in enumerate(row, start=1):
+                sheet.cell(row=i, column=j, value=cell)
 
 
-#-------------------------------- Email Sending part -----------------------
+        # Dynamically adjust the table range
+        table = sheet.tables['TICKETS']  # Replace 'YourTableName' with the actual table name in Excel
+        table_end_row = sheet.max_row
+        table_end_col = sheet.max_column   
 
-url = "https://emep-services.anthem.com/misc/utilityfaxnmail/members/JKJKJDS8989389383/email-utility"
-headers = {"Content-Type": "application/json"}
-body = {
-    'staticData': {
-        'fromEmail': 'noreply@anthem.com',
-        'toEmail': ['muralitharan.s@carelon.com'],
-        'ccEmail': ['raghu.kiran@elevancehealth.com'],
-        'subject': 'DocumentDB DATA LOAD SUCCESFULL',
-        'body': {'content': f"Today's Load Completed in Prod <br><br>Thanks", 'bodyContentType': 'HTML', 'toMarkSecure': 'true'}
-     }
-     #,
-    # 'dynamicData': {
-    #     'inLineResource': [{
-    #         'data': {'content': 'test,test2,tes3\n,tes4,tes5,test6', 'filetype': 'txt', 'encoding': 'none'},
-    #         'inLineResourceID': 'Deployment Details Report',
-    #         'archiveResource': 'none'
-    #     }]
-    # }
-}
-response = requests.request("POST", url, data=json.dumps(body), headers=headers, verify=False)
-if response.status_code == 200:
-    logging.info("Email sent successfully")
-else:
-    logging.info(f"Failed to send email: {response.reason}")
+        # Update the table range
+        table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
+
+        # Optionally, apply a style to the table
+        style = TableStyleInfo(
+            name="TableStyleLight2", 
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False
+        )
+        table.tableStyleInfo = style
+
+        workbook.save(new_file)
+        cursor_sql.close()
+        #connection.close()
+        print(get_get_current_time(),'--    Incident Tickets Query Sucessfull')    
+
+
+
+
+# from openpyxl import load_workbook
+
+
+# # Load the Excel workbook
+# workbook = load_workbook(new_file)
+# sheet = workbook['SNOW Extract']
+
+# # Clear existing data in the sheet (from the second row onwards)
+# for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=7):
+#     for cell in row:
+#         cell.value = None
+
+# # Paste the new data from the database
+# for i, row in enumerate(cursor_sql, start=2):
+#     for j, cell in enumerate(row, start=2):
+#         sheet.cell(row=i, column=j, value=cell)
+
+# # Dynamically adjust the table range
+# table = sheet.tables['YourTableName']  # Replace 'YourTableName' with the actual table name in Excel
+# table_end_row = sheet.max_row
+# table_end_col = sheet.max_column
+
+# # Update the table range
+# table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
+
+# # Optionally, apply a style to the table
+# style = TableStyleInfo(
+#     name="TableStyleMedium9", 
+#     showFirstColumn=False,
+#     showLastColumn=False,
+#     showRowStripes=True,
+#     showColumnStripes=True
+# )
+# table.tableStyleInfo = style
+
+# # Save the workbook
+# workbook.save(new_file)
+
+# cursor_sql.close()
+# connection.close()
+
+# print("SNOW Query Successful!")
+
+
+#----------------------------------Email Sending Part ---------------------------------------------------------------
+
+outlook = win32.Dispatch("Outlook.Application")
+mail = outlook.CreateItem(0)
+
+# Add recipients, subject, and body to the email
+#mail.To = "muralitharan.s@carelon.com;james.strange@elevancehealth.com;todd.cloncs@elevancehealth.com"
+mail.To = "muralitharan.s@carelon.com"
+subject=f'DBID Report - {today}'
+mail.Subject = subject
+mail.Body = "Hi All,\
+             \n \
+             \n \
+Please find the DBID daily excel report in attachment \
+            \n \
+            \n \
+Thanks and Regards, \n \
+EDBG Team.\
+\n \
+\n \
+\n \
+---------------------------------SYSTEM GENERATED EMAIL--------------------------------------\
+"
+##print(new_file)
+# Attach the Excel file to the email
+attachment = new_file
+mail.Attachments.Add(attachment)
+
+# Send the email
+mail.Send()
+#print('Email Sent')
+#print(get_get_current_time(),'--     Email Sent Sucessfull')
+print(get_get_current_time(),"--     Today's file EXported")
