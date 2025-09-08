@@ -1,11 +1,12 @@
 import pandas as pd
 import pyodbc
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Path to your Excel
 excel_file = "connection_hosts.xlsx"
 
-driver = "{ODBC Driver 17 for SQL Server}"   # Make sure this driver is installed
-default_db = "master"  # Fallback DB if none provided
+driver = "{ODBC Driver 17 for SQL Server}"   # Ensure installed
+default_db = "master"  # fallback database
 
 # Load Excel
 df = pd.read_excel(excel_file)
@@ -14,17 +15,14 @@ df = pd.read_excel(excel_file)
 if "Status" not in df.columns:
     df["Status"] = ""
 
-# Iterate rows
-for index, row in df.iterrows():
-    host_port = str(row[0])  # First column has hostname/port
-    
+def test_connection(index, host_port):
+    """Try connecting to a given host/port and return result."""
     if "/" in host_port:
         host, port = host_port.split("/")
     else:
         host = host_port
-        port = "1433"  # Default SQL Server port
+        port = "1433"
 
-    # Build connection string (Trusted Connection, DB optional)
     conn_str = (
         f"DRIVER={driver};"
         f"SERVER={host},{port};"
@@ -36,11 +34,22 @@ for index, row in df.iterrows():
     try:
         conn = pyodbc.connect(conn_str)
         conn.close()
-        df.at[index, "Status"] = "Connected"
+        return index, "Connected"
     except Exception as e:
-        df.at[index, "Status"] = "Not Connected"
+        return index, "Not Connected"
+
+# Use ThreadPoolExecutor for parallel connections
+results = []
+with ThreadPoolExecutor(max_workers=10) as executor:  # adjust workers as needed
+    future_to_index = {
+        executor.submit(test_connection, index, str(row[0])): index
+        for index, row in df.iterrows()
+    }
+    for future in as_completed(future_to_index):
+        index, status = future.result()
+        df.at[index, "Status"] = status
 
 # Save results
 df.to_excel("connection_hosts_checked.xlsx", index=False)
 
-print("✅ Completed. Results saved in connection_hosts_checked.xlsx")
+print("✅ Completed with multithreading. Results saved in connection_hosts_checked.xlsx")
