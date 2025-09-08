@@ -1,407 +1,46 @@
-import cx_Oracle
-import openpyxl
-import os
-import shutil
-import datetime
-import win32com.client as win32
+import pandas as pd
 import pyodbc
-from openpyxl.worksheet.table import TableStyleInfo
 
-# --- Helper to get current time string ---
-def get_get_current_time():
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# Path to your Excel
+excel_file = "connection_hosts.xlsx"
 
-# --- Get Documents folder cross-platform ---
-def get_documents_folder():
-    if os.name == 'nt':  # Windows
-        return os.path.join(os.environ['USERPROFILE'], 'Documents')
-    elif os.name == 'posix':  # macOS/Linux
-        return os.path.join(os.path.expanduser("~"), "Documents")
-    else:
-        raise OSError("Unsupported operating system")
+driver = "{ODBC Driver 17 for SQL Server}"   # Make sure this driver is installed
+default_db = "master"  # Fallback DB if none provided
 
-# --- Safe Excel writing to avoid Unicode errors ---
-def safe_excel_write(ws, row_idx, col_idx, value):
-    if isinstance(value, bytes):
-        try:
-            value = value.decode("utf-8", errors="replace")
-        except:
-            value = str(value)
-    ws.cell(row=row_idx, column=col_idx, value=value)
+# Load Excel
+df = pd.read_excel(excel_file)
 
-# --- Setup paths ---
-location = get_documents_folder()
-DBID_Automation = os.path.join(location, 'DBID_Automation')
-dir_path = os.path.join(DBID_Automation, 'Report')
-print(dir_path)
+# Ensure Status column exists
+if "Status" not in df.columns:
+    df["Status"] = ""
 
-# --- Get newest file in dir ---
-def newest_file_in_dir(dir_path):
-    files = [f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))]
-    files.sort(key=lambda x: os.path.getmtime(os.path.join(dir_path, x)), reverse=True)
-    return files[0]
-
-new = newest_file_in_dir(dir_path)
-today = datetime.datetime.now().strftime("%m_%d_%y")
-template_file = os.path.join(dir_path, new)
-new_file = f"{template_file[:-13]}{today}.xlsx"
-
-# Copy or replace file
-if new_file == template_file:
-    os.remove(template_file)
-    new = newest_file_in_dir(dir_path)
-    template_file = os.path.join(dir_path, new)
-    shutil.copy2(template_file, new_file)
-else:
-    shutil.copy2(template_file, new_file)
-
-print("bef")
-
-# --- Oracle Connection ---
-dsn = cx_Oracle.makedsn(host="ihubtopo-p-01.internal.das", port=1525, service_name="topoprd")
-username = "wdbs"
-password = "YBkHzLmvsQG-n3rTUOpCdAfW$"
-
-server = 'sql-snow-prod.us.ad.wellpoint.com\SQL01,10001'  # Use hostname or IP address
-database = 'ServiceNow'
-connection_string = f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={database};Trusted_Connection=yes;"
-conn = pyodbc.connect(connection_string)
-print(" SQLSERVER Connection successful!")
-
-connection = cx_Oracle.connect(
-    user=username,
-    password=password,
-    dsn=dsn,
-    encoding="UTF-8",
-    nencoding="UTF-8"
-)
-
-# --- Read queries from file ---
-Query_Location = os.path.join(DBID_Automation, 'queries.txt')
-with open(Query_Location, 'r', encoding='utf-8') as f:
-    queries = f.read()
-a = queries.split(";")
-
-loop = []
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-job, error, dbid, snow, tickets = a[0], a[1], a[2], a[3], a[4]
-loop.extend([job, error, dbid, snow, tickets])
-
-
-
-# --- Loop through all queries ---
-for i in loop:
-    if i==dbid:
-        print(get_get_current_time(),'--     DBID Collection Query Started')
-        #connection = cx_Oracle.connect("wdbs", "catbarf", "WDBS_PROD")
-        cursor = connection.cursor()
-        cursor.execute(dbid)
-        # Load the Excel workbook
-        workbook = openpyxl.load_workbook(new_file)
-        # Get the target sheet
-        sheet = workbook['DBID Collection']
-        #################
-        # Clear data in columns 9 to 28 (I to AB), starting from row 2
-        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=9, max_col=27):
-            for cell in row:
-                cell.value = None
-
-        # Paste the new data into columns 9 to 28 (I to AB), starting from row 2
-        for i, row in enumerate(cursor, start=2):
-            for j, value in enumerate(row, start=9):
-                sheet.cell(row=i, column=j, value=value)
-
-        # # Dynamically adjust the table range to include the entire sheet
-        # table = sheet.tables['DBIDS']  # Replace with the actual table name
-        # table_end_row = sheet.max_row  # Includes all rows with data
-        # table_end_col = sheet.max_column  # Includes all columns (A to AB)
-
-        # # Update the table range to include the entire sheet
-        # table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
-
-        # # Optionally apply a style to the table
-        # style = TableStyleInfo(
-        #     name="TableStyleLight2",  # You can choose any style you prefer
-        #     showFirstColumn=False,
-        #     showLastColumn=False,
-        #     showRowStripes=True,
-        #     showColumnStripes=False
-        # )
-        # table.tableStyleInfo = style
-
-        ###############
-
-
-        workbook.save(new_file)
-        cursor.close()
-        #connection.close()
-        print(get_get_current_time(),'--     DBID Sucessfull')
-    elif i==job:
-        print(get_get_current_time(),'--     Job Completion Query Started')
-        #connection = cx_Oracle.connect("wdbs", "catbarf", "WDBS_PROD")
-        cursor = connection.cursor()
-        cursor.execute(job)
-        # Load the Excel workbook
-        workbook = openpyxl.load_workbook(new_file)
-        # Get the target sheet
-        sheet = workbook['Job Completion']
-        
-        # Clear the existing data in the sheet, starting from the second row
-        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
-            for cell in row:
-                cell.value = None
-
-        # Paste the data from the database into the sheet, starting from the second row
-        for i, row in enumerate(cursor, start=2):
-            for j, cell in enumerate(row, start=1):
-                sheet.cell(row=i, column=j, value=cell)
-
-         # Dynamically adjust the table range
-        table = sheet.tables['JOB']  # Replace 'YourTableName' with the actual table name in Excel
-        table_end_row = sheet.max_row
-        table_end_col = sheet.max_column   
-
-        # Update the table range
-        table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
-
-        # Optionally, apply a style to the table
-        style = TableStyleInfo(
-            name="TableStyleLight2", 
-            showFirstColumn=False,
-            showLastColumn=False,
-            showRowStripes=True,
-            showColumnStripes=False
-        )
-        table.tableStyleInfo = style
-
+# Iterate rows
+for index, row in df.iterrows():
+    host_port = str(row[0])  # First column has hostname/port
     
+    if "/" in host_port:
+        host, port = host_port.split("/")
+    else:
+        host = host_port
+        port = "1433"  # Default SQL Server port
 
-        workbook.save(new_file)
-        cursor.close()
-        #connection.close()
-        print(get_get_current_time(),'--     Job Completion Sucessfull')
-    elif i==error:
-        print(get_get_current_time(),'--     Error Message Query Started')
-        #connection = cx_Oracle.connect("wdbs", "catbarf", "WDBS_PROD")
-        cursor = connection.cursor()
-        cursor.execute(error)
-        # Load the Excel workbook
-        workbook = openpyxl.load_workbook(new_file)
-        # Get the target sheet
-        sheet = workbook['Error Messages']
-        
-        # Clear the existing data in the sheet, starting from the second row
-        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
-            for cell in row:
-                cell.value = None
+    # Build connection string (Trusted Connection, DB optional)
+    conn_str = (
+        f"DRIVER={driver};"
+        f"SERVER={host},{port};"
+        f"DATABASE={default_db};"
+        "Trusted_Connection=yes;"
+        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=5;"
+    )
 
-        # Paste the data from the database into the sheet, starting from the second row
-        for i, row in enumerate(cursor, start=2):
-            for j, cell in enumerate(row, start=1):
-                sheet.cell(row=i, column=j, value=cell)
-        '''
-        # Dynamically adjust the table range
-        table = sheet.tables['ERRORS']  # Replace 'YourTableName' with the actual table name in Excel
-        table_end_row = sheet.max_row
-        table_end_col = sheet.max_column   
+    try:
+        conn = pyodbc.connect(conn_str)
+        conn.close()
+        df.at[index, "Status"] = "Connected"
+    except Exception as e:
+        df.at[index, "Status"] = "Not Connected"
 
-        # Update the table range
-        table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
+# Save results
+df.to_excel("connection_hosts_checked.xlsx", index=False)
 
-        # Optionally, apply a style to the table
-        style = TableStyleInfo(
-            name="TableStyleLight2", 
-            showFirstColumn=False,
-            showLastColumn=False,
-            showRowStripes=True,
-            showColumnStripes=False
-        )
-        table.tableStyleInfo = style
-        '''
-
-        workbook.save(new_file)
-        cursor.close()
-        #connection.close()
-        print(get_get_current_time(),'--     Error Message Sucessfull')
-
-    elif i==snow:
-        print(get_get_current_time(),'--     SNOW Query Started')
-        #connection = cx_Oracle.connect("wdbs", "catbarf", "WDBS_PROD")
-        cursor_sql = conn.cursor()
-        cursor_sql.execute(snow)
-        # Load the Excel workbook
-        workbook = openpyxl.load_workbook(new_file)
-        # Get the target sheet
-        sheet = workbook['SNOW Extract']
-        
-        # Clear the existing data in the sheet, starting from the second row and column 7 to the end
-        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
-            for cell in row[2:]:
-                cell.value = None
-                
-        # Paste the data from the database into the sheet, starting from the second row and column 7
-        for i, row in enumerate(cursor_sql, start=2):
-            for j, cell in enumerate(row[0:], start=2):
-                sheet.cell(row=i, column=j, value=cell)
-
-        #  # Dynamically adjust the table range
-        # table = sheet.tables['SNOW']  # Replace 'YourTableName' with the actual table name in Excel
-        # table_end_row = sheet.max_row
-        # table_end_col = sheet.max_column   
-
-        # # Update the table range
-        # table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
-
-        # # Optionally, apply a style to the table
-        # style = TableStyleInfo(
-        #     name="TableStyleLight2", 
-        #     showFirstColumn=False,
-        #     showLastColumn=False,
-        #     showRowStripes=True,
-        #     showColumnStripes=False
-        # )
-        # table.tableStyleInfo = style
-        workbook.save(new_file)
-        cursor_sql.close()
-        #connection.close()
-        print(get_get_current_time(),'--     SNOW Query Sucessfull')  
-
-    elif i==tickets:
-        print(get_get_current_time(),'--     Incident Tickets Query Started')
-        #connection = cx_Oracle.connect("wdbs", "catbarf", "WDBS_PROD")
-        cursor_sql = conn.cursor()
-        cursor_sql.execute(tickets)
-        # Load the Excel workbook
-        workbook = openpyxl.load_workbook(new_file)
-        # Get the target sheet
-        sheet = workbook['Tickets']
-        
-        # Clear the existing data in the sheet, starting from the second row
-        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
-            for cell in row:
-                cell.value = None
-
-        # Paste the data from the database into the sheet, starting from the second row
-        for i, row in enumerate(cursor_sql, start=2):
-            for j, cell in enumerate(row, start=1):
-                sheet.cell(row=i, column=j, value=cell)
-
-
-        # Dynamically adjust the table range
-        table = sheet.tables['TICKETS']  # Replace 'YourTableName' with the actual table name in Excel
-        table_end_row = sheet.max_row
-        table_end_col = sheet.max_column   
-
-        # Update the table range
-        table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
-
-        # Optionally, apply a style to the table
-        style = TableStyleInfo(
-            name="TableStyleLight2", 
-            showFirstColumn=False,
-            showLastColumn=False,
-            showRowStripes=True,
-            showColumnStripes=False
-        )
-        table.tableStyleInfo = style
-
-        workbook.save(new_file)
-        cursor_sql.close()
-        #connection.close()
-        print(get_get_current_time(),'--    Incident Tickets Query Sucessfull')    
-
-
-
-
-# from openpyxl import load_workbook
-
-
-# # Load the Excel workbook
-# workbook = load_workbook(new_file)
-# sheet = workbook['SNOW Extract']
-
-# # Clear existing data in the sheet (from the second row onwards)
-# for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=7):
-#     for cell in row:
-#         cell.value = None
-
-# # Paste the new data from the database
-# for i, row in enumerate(cursor_sql, start=2):
-#     for j, cell in enumerate(row, start=2):
-#         sheet.cell(row=i, column=j, value=cell)
-
-# # Dynamically adjust the table range
-# table = sheet.tables['YourTableName']  # Replace 'YourTableName' with the actual table name in Excel
-# table_end_row = sheet.max_row
-# table_end_col = sheet.max_column
-
-# # Update the table range
-# table.ref = f"A1:{sheet.cell(row=table_end_row, column=table_end_col).coordinate}"
-
-# # Optionally, apply a style to the table
-# style = TableStyleInfo(
-#     name="TableStyleMedium9", 
-#     showFirstColumn=False,
-#     showLastColumn=False,
-#     showRowStripes=True,
-#     showColumnStripes=True
-# )
-# table.tableStyleInfo = style
-
-# # Save the workbook
-# workbook.save(new_file)
-
-# cursor_sql.close()
-# connection.close()
-
-# print("SNOW Query Successful!")
-
-
-#----------------------------------Email Sending Part ---------------------------------------------------------------
-
-outlook = win32.Dispatch("Outlook.Application")
-mail = outlook.CreateItem(0)
-
-# Add recipients, subject, and body to the email
-#mail.To = "muralitharan.s@carelon.com;james.strange@elevancehealth.com;todd.cloncs@elevancehealth.com"
-mail.To = "muralitharan.s@carelon.com"
-subject=f'DBID Report - {today}'
-mail.Subject = subject
-mail.Body = "Hi All,\
-             \n \
-             \n \
-Please find the DBID daily excel report in attachment \
-            \n \
-            \n \
-Thanks and Regards, \n \
-EDBG Team.\
-\n \
-\n \
-\n \
----------------------------------SYSTEM GENERATED EMAIL--------------------------------------\
-"
-##print(new_file)
-# Attach the Excel file to the email
-attachment = new_file
-mail.Attachments.Add(attachment)
-
-# Send the email
-mail.Send()
-#print('Email Sent')
-#print(get_get_current_time(),'--     Email Sent Sucessfull')
-print(get_get_current_time(),"--     Today's file EXported")
+print("✅ Completed. Results saved in connection_hosts_checked.xlsx")
